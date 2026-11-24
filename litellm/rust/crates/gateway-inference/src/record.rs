@@ -34,7 +34,7 @@ use tokio::task::futures::TaskLocalFuture;
 pub(crate) use self::custom_headers::render_response_headers;
 pub use self::{
     attempt::{AttemptRecord, Recorder, ServedDeployment},
-    entries::{CallState, Charged, Ended, HeadSent, unix},
+    entries::{CallState, Charged, Ended, ErrorResponse, HeadSent, unix},
 };
 
 tokio::task_local! {
@@ -98,7 +98,7 @@ where
     let mut record = std::mem::take(&mut *record.lock());
     if let Err(error) = &output {
         record.record_failure(error);
-        write(|state| state.failed(record.clone()));
+        write(|state| state.failed_attempts.push(record.clone()));
     }
     (output, record)
 }
@@ -233,7 +233,7 @@ mod tests {
         let router = Router::new()
             .route(
                 "/",
-                get(|| async { read(|entries| entries.trace_id().to_owned()).unwrap() }),
+                get(|| async { read(|entries| entries.trace_id.clone()).unwrap() }),
             )
             .layer(axum::middleware::from_fn(scoped));
         let request = Request::get("/")

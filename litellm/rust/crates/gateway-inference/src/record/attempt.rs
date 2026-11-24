@@ -11,8 +11,9 @@ use litellm_host::interceptors::{
 
 use crate::Error;
 
-/// What one attempt saw of its provider: where it called, when its request went out and its
-/// response head came back, the headers that head carried and where its result came from.
+/// What one attempt saw of its provider: where it called, when its request went out, its
+/// response head came back and its result was ready, the headers that head carried and where
+/// its result came from.
 /// [`Recorder`] fills it; readers get it through the call's record, which only lends it out.
 /// `Debug` hides the URL and the headers, which can carry credentials.
 #[derive(Clone, Default, PartialEq, Eq, veil::Redact)]
@@ -26,6 +27,8 @@ pub struct AttemptRecord {
     pub head: Option<Instant>,
     /// How long the provider took from the request sent to its response head.
     pub wait: Option<Duration>,
+    /// When the core had the attempt's result ready, a complete response read and transformed.
+    pub ready: Option<Instant>,
     /// The headers the provider's response head carried.
     #[redact(with = "[REDACTED]")]
     pub provider_headers: Vec<(String, String)>,
@@ -120,7 +123,10 @@ impl<E> Interceptors<E> for Recorder {
     }
 
     async fn result_ready(&self, facts: ExecutionFacts) -> Result<(), E> {
-        super::note(|record| record.source = Some(facts.source));
+        super::note(|record| {
+            record.ready = Some(Instant::now());
+            record.source = Some(facts.source);
+        });
         Ok(())
     }
 }
