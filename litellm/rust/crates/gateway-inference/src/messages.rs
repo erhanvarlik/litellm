@@ -20,11 +20,11 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::{
-    Error, Gateway, JsonObject,
-    caching::CacheHeaders,
+    Error, Gateway, JsonObject, caching,
     error::ErrorFormat,
     hooks::CallType,
     model_restamp::{ReportedModel, Stamp},
+    record::{self, Recorder},
     routing::{self, Host, Prompt, RouteAttempt, RouteChunks},
     serve::{self, Call, Endpoint},
     stream_event::{Counts, Kind, Read, Reading},
@@ -110,7 +110,7 @@ impl<H: Host> Endpoint for MessagesAttempt<'_, H> {
         Some(counts.messages_usage())
     }
 
-    fn response_id((ran, _): &Self::Outcome) -> Option<String> {
+    fn response_id(ran: &Self::Output) -> Option<String> {
         match ran {
             CallOutput::Complete(MessagesBody::Message(message)) => Some(message.id.clone()),
             CallOutput::Complete(MessagesBody::Unchecked(fields)) => {
@@ -127,26 +127,30 @@ impl<H: Host> Endpoint for MessagesAttempt<'_, H> {
         }
     }
 
-    fn render((ran, cache): Self::Outcome, reported: ReportedModel<'_>) -> Result<Response, Error> {
+    fn render(ran: Self::Output, reported: ReportedModel<'_>) -> Result<Response, Error> {
         let stream =
             Sse::<Messages, _, _>::new(Json, |error| Bytes::from(Error::from(error).sse_frame()));
         let ran = reported.answer(ran, message_start);
         let response = litellm_host_http::render(stream, stream_outcome::bytes(ran))?;
-        Ok(cache.apply(response))
+        Ok(caching::with_cache_key(response))
     }
 }
 
 impl<H: Host> RouteAttempt for MessagesAttempt<'_, H> {
-    type Outcome = (Streamed<Messages>, CacheHeaders);
+    type Output = Streamed<Messages>;
 
     fn prompt(&self) -> Option<Prompt<'_>> {
         Some(Prompt::Messages(&self.body))
     }
 
-    async fn run(&self, attempt: &Attempt) -> Result<Self::Outcome, Error> {
+    async fn run(&self, attempt: &Attempt) -> Result<Self::Output, Error> {
         let deployment = &attempt.deployment;
         let call = MessagesCall {
-            timeout: routing::timeout(attempt, routing::streamed(&self.body)),
+            timeout: routing::timeout(
+                deployment,
+                attempt.timeout,
+                <Self as Endpoint>::streamed(&self.body),
+            ),
             ..project(
                 deployment,
                 self.gateway.shaping(&deployment.id),
@@ -155,24 +159,25 @@ impl<H: Host> RouteAttempt for MessagesAttempt<'_, H> {
             )?
         };
         let machine = self.route.clone().machine(call, self.policy);
-        let cache = CacheHeaders::default();
-        let ran = litellm_host_http::run(machine, (), cache.clone(), None).await?;
-        let ran = match ran {
+        let ran = litellm_host_http::run(machine, (), Recorder, None).await?;
+        Ok(match ran {
             CallOutput::Complete(body) => CallOutput::Complete(body),
-            CallOutput::Stream { head, chunks } => CallOutput::Stream {
-                head,
-                chunks: sse::blocks(chunks).boxed(),
-            },
-        };
-        Ok((ran, cache))
+            CallOutput::Stream { head, chunks } => {
+                record::stream_head(head.headers.clone());
+                CallOutput::Stream {
+                    head,
+                    chunks: sse::blocks(chunks).boxed(),
+                }
+            }
+        })
     }
 
-    fn counts((ran, _): &Self::Outcome) -> Option<Counts> {
+    fn counts(ran: &Self::Output) -> Option<Counts> {
         counts(ran)
     }
 
-    fn held(outcome: &mut Self::Outcome) -> Option<(&mut RouteChunks, Read)> {
-        match &mut outcome.0 {
+    fn held(ran: &mut Self::Output) -> Option<(&mut RouteChunks, Read)> {
+        match ran {
             CallOutput::Stream { chunks, .. } => Some((chunks, read_event)),
             CallOutput::Complete(_) => None,
         }
