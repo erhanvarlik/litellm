@@ -1,9 +1,5 @@
-use axum::{
-    http::{HeaderName, HeaderValue},
-    response::Response,
-};
+use axum::http::HeaderName;
 use litellm_router_core::RouterResponse;
-use tower_http::set_header::SetResponseHeaderLayer;
 
 /// `LITELLM_UI_ALLOW_HEADERS` in `litellm/constants.py`.
 #[derive(Clone, Copy, Debug, strum::VariantArray, strum::IntoStaticStr)]
@@ -30,27 +26,27 @@ impl From<ExposedHeader> for HeaderName {
     }
 }
 
-/// What the router did for a request. A route attaches it to its response as an extension, and
-/// [`layer`] is the one place that turns it into the proxy's `x-litellm-*` headers, the same for
-/// a complete answer and for a stream, whose head is written after its attempt was served.
+/// What the router did for a request. The route writes it to the call's record, and
+/// `record::render_response_headers` turns it into the proxy's `x-litellm-*` headers, the same for
+/// a complete response and for a stream, whose head is written after its attempt was served.
 #[derive(Clone, Debug)]
 pub struct Routing {
     /// The deployment the last attempt ran on.
-    deployment_id: String,
+    pub(crate) deployment_id: String,
     /// `None` for a call that ended on a failed attempt, which the proxy names only the
     /// deployment of.
-    served: Option<Served>,
+    pub(crate) served: Option<Served>,
 }
 
 #[derive(Clone, Debug)]
-struct Served {
+pub(crate) struct Served {
     /// The name the call ran under, an alias as the client wrote it (`x-litellm-model-group`).
-    model_group: String,
+    pub(crate) model_group: String,
     /// The group that name resolves to, which the router counts usage under.
-    counted_group: String,
-    attempted_retries: u32,
-    attempted_fallbacks: u32,
-    max_retries: Option<u32>,
+    pub(crate) counted_group: String,
+    pub(crate) attempted_retries: u32,
+    pub(crate) attempted_fallbacks: u32,
+    pub(crate) max_retries: Option<u32>,
 }
 
 impl Routing {
@@ -82,50 +78,19 @@ impl Routing {
     }
 }
 
-/// Reads one header's value off a response.
-type Read = fn(&Response) -> Option<HeaderValue>;
-type SetHeader = SetResponseHeaderLayer<Read>;
-
-/// `value` of what the router did for `response`, `None` for a response no route attached a
-/// [`Routing`] to.
-fn told(response: &Response, value: fn(&Routing) -> Option<String>) -> Option<HeaderValue> {
-    let routing = response.extensions().get::<Routing>()?;
-    HeaderValue::from_str(&value(routing)?).ok()
-}
-
-/// Writes the routing headers of every response that carries a [`Routing`]. The layers run on a
-/// response from the last to the first, so the headers go out in the proxy's order.
-pub(crate) fn layer() -> (SetHeader, SetHeader, SetHeader, SetHeader, SetHeader) {
-    let set = |name: &'static str, read: Read| {
-        SetResponseHeaderLayer::overriding(HeaderName::from_static(name), read)
-    };
-    (
-        set("x-litellm-max-retries", |response| {
-            told(response, |routing| {
-                routing
-                    .served
-                    .as_ref()?
-                    .max_retries
-                    .map(|max| max.to_string())
-            })
-        }),
-        set("x-litellm-attempted-fallbacks", |response| {
-            told(response, |routing| {
-                Some(routing.served.as_ref()?.attempted_fallbacks.to_string())
-            })
-        }),
-        set("x-litellm-attempted-retries", |response| {
-            told(response, |routing| {
-                Some(routing.served.as_ref()?.attempted_retries.to_string())
-            })
-        }),
-        set("x-litellm-model-group", |response| {
-            told(response, |routing| {
-                Some(routing.served.as_ref()?.model_group.clone())
-            })
-        }),
-        set("x-litellm-model-id", |response| {
-            told(response, |routing| Some(routing.deployment_id.clone()))
-        }),
-    )
+#[cfg(test)]
+impl Routing {
+    /// A call `deployment_id` served under `model_group` after `retries` retries.
+    pub(crate) fn served_by(deployment_id: &str, model_group: &str, retries: u32) -> Self {
+        Self {
+            deployment_id: deployment_id.to_owned(),
+            served: Some(Served {
+                model_group: model_group.to_owned(),
+                counted_group: model_group.to_owned(),
+                attempted_retries: retries,
+                attempted_fallbacks: 0,
+                max_retries: (retries > 0).then_some(retries),
+            }),
+        }
+    }
 }
