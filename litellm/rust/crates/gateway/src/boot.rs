@@ -87,6 +87,7 @@ fn shaping(
             drops_unsupported_params: drop_params,
             additional_drop_params: additional_drop_params(deployment),
             base_model: base_model.map(str::to_owned),
+            pricing: crate::pricing::identity(deployment),
             ..MessagesSettings::default()
         },
         capabilities: messages_route_capabilities(
@@ -233,5 +234,58 @@ mod tests {
                 .supports_reasoning,
             expected
         );
+    }
+
+    #[rstest]
+    #[case::a_catalog_priced_deployment("", "", Some(None))]
+    #[case::a_base_model_in_its_params(
+        "\n      base_model: claude-opus-5-5",
+        "",
+        Some(Some("claude-opus-5-5"))
+    )]
+    #[case::a_base_model_in_its_model_info(
+        "",
+        "\n      base_model: claude-opus-5-5",
+        Some(Some("claude-opus-5-5"))
+    )]
+    #[case::custom_pricing_in_its_params("\n      input_cost_per_token: 0.000001", "", None)]
+    #[case::custom_pricing_in_its_model_info("", "\n      output_cost_per_token: 0.000002", None)]
+    #[case::off_peak_pricing_in_its_model_info("", "\n      off_peak_pricing: {}", None)]
+    #[case::a_custom_pricing_key_left_unset("\n      input_cost_per_token: null", "", Some(None))]
+    #[case::a_pricing_provider("", "\n      pricing_provider: anthropic", None)]
+    #[case::an_invoked_bedrock_model_id("\n      model_id: arn:aws:bedrock:model", "", None)]
+    #[tokio::test]
+    async fn a_deployment_is_priced_unless_python_prices_it_another_way(
+        #[case] params: &str,
+        #[case] model_info: &str,
+        #[case] expected: Option<Option<&str>>,
+    ) {
+        let (_, shaping) = built(&format!(
+            "model_list:\n  - model_name: public-model\n    litellm_params:\n      model: anthropic/claude-opus-5-5{params}\n    model_info:\n      id: deployment-1{model_info}"
+        ))
+        .await;
+        let pricing = shaping.values().next().unwrap().settings.pricing.clone();
+
+        assert_eq!(
+            pricing.as_ref().map(|identity| (
+                identity.deployment_id.as_deref(),
+                identity.base_model.as_deref()
+            )),
+            expected.map(|base_model| (Some("deployment-1"), base_model))
+        );
+    }
+
+    #[rstest]
+    #[case::vertex_ai("vertex_ai/claude-opus-5-5")]
+    #[case::bedrock_mantle("bedrock_mantle/claude-opus-5-5")]
+    #[case::mantle_through_bedrock("bedrock/mantle/claude-opus-5-5")]
+    #[tokio::test]
+    async fn a_deployment_whose_price_reads_a_region_is_left_unpriced(#[case] model: &str) {
+        let (_, shaping) = built(&format!(
+            "model_list:\n  - model_name: public-model\n    litellm_params:\n      model: {model}"
+        ))
+        .await;
+
+        assert_eq!(shaping.values().next().unwrap().settings.pricing, None);
     }
 }

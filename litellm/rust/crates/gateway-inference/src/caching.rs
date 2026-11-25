@@ -72,10 +72,12 @@ fn duration(seconds: f64) -> Result<Duration, BodyError> {
     }
 }
 
+/// What an attempt's route told of its result: the cache key it answered from, which the response
+/// names in a header, and the cost it settled, which goes into the call record.
 #[derive(Clone, Default)]
-pub(crate) struct CacheHeaders(std::sync::Arc<std::sync::OnceLock<String>>);
+pub(crate) struct ResultFacts(std::sync::Arc<std::sync::OnceLock<String>>);
 
-impl litellm_host::interceptors::Interceptors<litellm_inference::Error> for CacheHeaders {
+impl litellm_host::interceptors::Interceptors<litellm_inference::Error> for ResultFacts {
     async fn before_provider_request(
         &self,
         wire: litellm_host::interceptors::WireRequest,
@@ -95,6 +97,7 @@ impl litellm_host::interceptors::Interceptors<litellm_inference::Error> for Cach
         &self,
         facts: litellm_host::interceptors::ExecutionFacts,
     ) -> Result<(), litellm_inference::Error> {
+        crate::record::write(|state| state.bill(Some(facts.cost)));
         if let litellm_host::interceptors::ResultSource::Cache { key } = facts.source {
             let _ = self.0.set(key);
         }
@@ -102,7 +105,7 @@ impl litellm_host::interceptors::Interceptors<litellm_inference::Error> for Cach
     }
 }
 
-impl CacheHeaders {
+impl ResultFacts {
     pub(crate) fn apply(&self, mut response: axum::response::Response) -> axum::response::Response {
         if let Some(key) = self.0.get()
             && let Ok(value) = axum::http::HeaderValue::from_str(key)

@@ -69,6 +69,14 @@ impl<H: Host> Gateway<H> {
         }
     }
 
+    /// Prices each Messages call whose deployment carries a pricing identity.
+    pub fn with_pricing(self, pricing: Arc<dyn litellm_inference_messages::Pricing>) -> Self {
+        Self {
+            messages: self.messages.with_pricing(pricing),
+            ..self
+        }
+    }
+
     /// The deployments' routing state, which the host hands router-core.
     pub fn routing(&self) -> &RoutingCache {
         &self.routing

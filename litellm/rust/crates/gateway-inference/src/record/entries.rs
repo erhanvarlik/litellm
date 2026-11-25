@@ -3,6 +3,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use litellm_host::interceptors::Cost;
 use serde_json::{Map, Value};
 
 use crate::{CallType, ServedCall};
@@ -75,6 +76,8 @@ pub struct CallState {
     request: Request,
     rate_limit_statuses: Option<Value>,
     response_headers: Map<String, Value>,
+    /// What the latest attempt's route settled the call's cost as.
+    cost: Option<Cost>,
     served: Option<ServedCall>,
     ended: Option<Ended>,
 }
@@ -102,6 +105,7 @@ impl CallState {
             },
             rate_limit_statuses: None,
             response_headers: Map::new(),
+            cost: None,
             served: None,
             ended: None,
         }
@@ -222,6 +226,16 @@ impl CallState {
     /// Adds a header to the answer.
     pub fn add_header(&mut self, name: String, value: Value) {
         self.response_headers.insert(name, value);
+    }
+
+    /// What an attempt's route settled the cost as, `None` when an attempt starts, so a failed
+    /// attempt's cost never stays with the one after it.
+    pub fn bill(&mut self, cost: Option<Cost>) {
+        self.cost = cost;
+    }
+
+    pub fn cost(&self) -> Option<&Cost> {
+        self.cost.as_ref()
     }
 
     pub fn serve(&mut self, served: ServedCall) {

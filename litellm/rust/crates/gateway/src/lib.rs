@@ -11,6 +11,7 @@ mod license;
 mod live;
 pub mod middleware;
 mod periodic;
+mod pricing;
 mod redis;
 mod reload;
 mod resources;
@@ -127,6 +128,7 @@ pub(crate) async fn inference_over(
     let (router, shaping) = boot::router(config, &catalog).await?;
     let deployments = router.registry().deployments(&DeploymentFilter::default());
     let windows = host::ContextWindows::read(&catalog, &deployments).await;
+    let pricing = Arc::new(pricing::CatalogPricing::new(Arc::new(catalog)));
     let limits = parallel_request_limiter::Settings::read(config, variables);
     let key_limiter = KeyLimiter::new(limits, counters.clone(), router.clone());
     let licensed = resources.environment.get(LICENSE).is_some();
@@ -153,7 +155,8 @@ pub(crate) async fn inference_over(
         shaping,
         routing,
         host::NativeHost::new(Arc::new(callbacks), Arc::new(windows)),
-    )?;
+    )?
+    .with_pricing(pricing);
     Ok(Inference {
         gateway: Arc::new(gateway),
         key_limiter,

@@ -21,7 +21,7 @@ use serde_json::{Map, Value};
 
 use crate::{
     Error, Gateway, JsonObject,
-    caching::CacheHeaders,
+    caching::ResultFacts,
     error::ErrorFormat,
     hooks::CallType,
     model_restamp::{ReportedModel, Stamp},
@@ -137,7 +137,7 @@ impl<H: Host> Endpoint for MessagesAttempt<'_, H> {
 }
 
 impl<H: Host> RouteAttempt for MessagesAttempt<'_, H> {
-    type Outcome = (Streamed<Messages>, CacheHeaders);
+    type Outcome = (Streamed<Messages>, ResultFacts);
 
     fn prompt(&self) -> Option<Prompt<'_>> {
         Some(Prompt::Messages(&self.body))
@@ -155,7 +155,8 @@ impl<H: Host> RouteAttempt for MessagesAttempt<'_, H> {
             )?
         };
         let machine = self.route.clone().machine(call, self.policy);
-        let cache = CacheHeaders::default();
+        crate::record::write(|state| state.bill(None));
+        let cache = ResultFacts::default();
         let ran = litellm_host_http::run(machine, (), cache.clone(), None).await?;
         let ran = match ran {
             CallOutput::Complete(body) => CallOutput::Complete(body),
